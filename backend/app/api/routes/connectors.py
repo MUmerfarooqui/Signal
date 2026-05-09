@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user_id
+from workers.embed import embed_events
 from app.config import get_settings
 from app.connectors.zendesk import (
     ZendeskClient,
@@ -278,5 +279,8 @@ def trigger_sync(
         connector.status = "active"
 
     db.commit()
+
+    if inserted > 0:
+        embed_events.delay(str(body.org_id))
 
     return SyncResponse(events_ingested=inserted, cursor=new_cursor)

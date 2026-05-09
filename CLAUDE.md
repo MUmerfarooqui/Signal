@@ -93,6 +93,19 @@ Always use prompt caching when calling Claude: cache the cluster summaries / dat
 - The product research doc is the source of truth for what Signal is. Check it before making product decisions.
 - Open questions (pricing model, minimum data threshold, brief cadence) are documented in the research doc Section 9 — surface them when they become build-relevant.
 
+## README
+
+README.md is the setup guide for new developers. Keep it accurate.
+
+Update README.md whenever you:
+- Add or remove a backend route
+- Change the startup command or process (e.g. `start.py`)
+- Add a required environment variable
+- Change a prerequisite (Python version, Node version, new external service)
+- Add or remove a migration step
+
+Do not update it for internal refactors that don't affect how someone sets up or runs the project.
+
 ## graphify
 
 This project has a graphify knowledge graph at graphify-out/.
