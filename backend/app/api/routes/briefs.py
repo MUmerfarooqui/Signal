@@ -35,6 +35,8 @@ class InsightOut(BaseModel):
     explanation: str
     suggested_action: str
     confidence: float
+    category: str | None = None
+    affected_count: int | None = None
     evidence: list[EvidenceOut] = []
 
     model_config = {"from_attributes": True}

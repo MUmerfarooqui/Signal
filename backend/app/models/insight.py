@@ -22,4 +22,6 @@ class Insight(Base):
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     suggested_action: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    affected_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

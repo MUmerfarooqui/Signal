@@ -6,6 +6,8 @@ The core loop: **Ingest → Embed → Cluster → Reason → Deliver**
 
 Tickets come in, get converted to vectors, grouped into themes by HDBSCAN, reasoned over by Claude Sonnet, and sent to your inbox every Monday.
 
+Between briefs, **Pulse** surfaces real-time signals — spikes above 1.5× your daily average — with no LLM cost, minutes after they appear in your support queue.
+
 ---
 
 ## Tech Stack
@@ -59,9 +61,8 @@ REDIS_URL=redis://localhost:6379/0
 CLERK_SECRET_KEY=        # from clerk.com → your app → API Keys
 CLERK_PUBLISHABLE_KEY=   # from clerk.com → your app → API Keys
 
-ZENDESK_CLIENT_ID=       # from your Zendesk OAuth app
-ZENDESK_CLIENT_SECRET=   # from your Zendesk OAuth app
-ZENDESK_SUBDOMAIN=       # e.g. yourcompany (without .zendesk.com)
+ZENDESK_CLIENT_ID=       # Signal's OAuth app client ID (register once at developer.zendesk.com)
+ZENDESK_CLIENT_SECRET=   # Signal's OAuth app client secret
 
 OPENAI_API_KEY=          # from platform.openai.com
 ANTHROPIC_API_KEY=       # from console.anthropic.com
@@ -156,6 +157,7 @@ Base URL: `http://localhost:8000/api/v1`
 | GET | `/briefs` | List briefs for an org |
 | GET | `/briefs/{id}` | Get brief with insights + evidence |
 | POST | `/briefs/generate` | Manually trigger brief generation |
+| GET | `/pulse` | Live Pulse feed (non-expired signals, newest first) |
 
 Interactive docs available at `http://localhost:8000/docs` (development only).
 
@@ -165,30 +167,67 @@ Interactive docs available at `http://localhost:8000/docs` (development only).
 
 ```
 signal/
-├── frontend/                  # Next.js app
-│   ├── app/                   # App router pages
-│   ├── components/            # UI components
-│   └── lib/                   # API client, types, utils
+├── frontend/
+│   ├── app/
+│   │   ├── page.tsx                    # Landing page
+│   │   ├── (auth)/
+│   │   │   ├── sign-in/[[...rest]]/    # Clerk sign-in
+│   │   │   └── sign-up/[[...rest]]/    # Clerk sign-up
+│   │   └── (app)/
+│   │       ├── layout.tsx              # Sidebar + auth guard
+│   │       ├── dashboard/              # Briefs list
+│   │       ├── briefs/[id]/            # Brief detail: insights + evidence
+│   │       ├── pulse/                  # Live Pulse feed
+│   │       └── connectors/             # Connector setup + OAuth
+│   ├── components/
+│   │   ├── sidebar.tsx                 # Navigation + org name + dark mode toggle
+│   │   └── theme-provider.tsx          # Class-based dark mode (light default)
+│   └── lib/
+│       └── api.ts                      # Typed API client
 ├── backend/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── routes/        # HTTP route handlers
-│   │   │   └── deps.py        # Clerk JWT auth dependency
-│   │   ├── connectors/        # Zendesk OAuth + sync logic
-│   │   ├── models/            # SQLAlchemy models (12 tables)
+│   │   │   ├── routes/
+│   │   │   │   ├── orgs.py
+│   │   │   │   ├── connectors.py
+│   │   │   │   ├── briefs.py
+│   │   │   │   └── pulse.py            # GET /pulse live feed
+│   │   │   └── deps.py                 # Clerk JWT auth dependency
+│   │   ├── connectors/                 # Zendesk OAuth + sync logic
+│   │   ├── models/                     # SQLAlchemy models (12 tables)
 │   │   └── db/
-│   │       └── migrations/    # Alembic migration versions
+│   │       └── migrations/             # Alembic migration versions
 │   ├── workers/
-│   │   ├── celery_app.py      # Celery instance + beat schedule
-│   │   ├── embed.py           # OpenAI embedding task
-│   │   ├── cluster.py         # HDBSCAN clustering
-│   │   ├── reason.py          # Claude reasoning
-│   │   ├── deliver.py         # Resend email delivery
-│   │   └── brief.py           # Orchestration task
-│   ├── start.py               # Single-command launcher
+│   │   ├── celery_app.py               # Celery instance + beat schedule
+│   │   ├── embed.py                    # OpenAI embedding task → chains pulse
+│   │   ├── cluster.py                  # HDBSCAN clustering
+│   │   ├── pulse.py                    # Spike detection (1.5× threshold, no LLM)
+│   │   ├── reason.py                   # Claude reasoning
+│   │   ├── deliver.py                  # Resend email delivery
+│   │   └── brief.py                    # Brief orchestration task
+│   ├── seed.py                         # Idempotent mock data seed
+│   ├── start.py                        # Single-command launcher
 │   └── requirements.txt
-└── docs/                      # Architecture, product research, MVP scope
+└── docs/                               # Architecture, product research, MVP scope
 ```
+
+---
+
+## Mock data (development)
+
+To populate the dashboard with realistic briefs and Pulse signals without connecting a live Zendesk account:
+
+```bash
+cd backend
+python seed.py              # seeds first org found
+python seed.py <org_id>     # seeds a specific org
+```
+
+The script is **idempotent** — it checks whether briefs and pulse items already exist for the org before inserting anything. Running it multiple times is safe.
+
+What it seeds:
+- **3 Intelligence Briefs** (1, 2, and 3 weeks ago) with 9 total insights across all six categories (recurring pain, feature gap, onboarding friction, reliability issue, workflow blocker, churn signal), each with evidence excerpts and mock ticket URLs
+- **5 Pulse feed items** (2 high severity, 2 medium, 1 low) spread across the last 24 hours
 
 ---
 

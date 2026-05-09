@@ -23,14 +23,16 @@ INSIGHT_SCHEMA = """
   "insights": [
     {
       "rank": 1,
+      "category": "one of: recurring_pain | feature_gap | onboarding_friction | reliability_issue | workflow_blocker | churn_signal",
       "title": "Short title (max 10 words)",
-      "explanation": "2-3 sentences explaining the pattern and why it matters",
-      "suggested_action": "One concrete action the PM should take",
+      "explanation": "2-3 sentences explaining the pattern and why it matters to the product team",
+      "suggested_action": "One concrete, specific action the PM should take — not generic advice",
       "confidence": 0.85,
+      "affected_count": 12,
       "evidence": [
         {
           "source_id": "ticket id from the data",
-          "excerpt": "short quote from the ticket",
+          "excerpt": "short verbatim quote from the ticket",
           "url": "ticket url"
         }
       ]

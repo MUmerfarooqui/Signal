@@ -13,10 +13,9 @@ class Settings(BaseSettings):
     clerk_secret_key: str = ""
     clerk_publishable_key: str = ""
 
-    # Zendesk
+    # Zendesk (Signal's OAuth app credentials — registered once at developer.zendesk.com)
     zendesk_client_id: str = ""
     zendesk_client_secret: str = ""
-    zendesk_subdomain: str = ""
 
     # OpenAI (embeddings)
     openai_api_key: str = ""

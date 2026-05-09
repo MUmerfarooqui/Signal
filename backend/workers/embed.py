@@ -66,4 +66,9 @@ def embed_events(self, org_id: str) -> dict:
     finally:
         db.close()
 
+    # Trigger pulse detection after embedding completes
+    if total_embedded > 0:
+        from workers.pulse import detect_pulse
+        detect_pulse.delay(org_id)
+
     return {"org_id": org_id, "embedded": total_embedded}

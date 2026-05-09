@@ -2,174 +2,151 @@
 
 ## Overview
 
-Signal is a two-service application: a Next.js frontend and a FastAPI backend. The backend does all the heavy lifting — ingestion, AI reasoning, and brief generation. The frontend is a thin layer that displays briefs and the insight feed.
+Signal is a two-service application: a Next.js 16 frontend and a FastAPI backend. The backend handles all ingestion, AI reasoning, and brief generation. The frontend displays briefs, the Pulse feed, and connector setup.
 
 ## High-Level Data Flow
 
 ```
-External Tools                  Backend                           Frontend
-─────────────                  ───────                           ────────
-Zendesk   ──┐                  ┌─────────────────────────┐
-Linear    ──┤  OAuth + Webhooks │  Connectors             │
-Slack     ──┤ ────────────────> │  (normalize → RawEvent) │
-Amplitude ──┤                  └───────────┬─────────────┘
-Gong      ──┘                              │
-                                           ▼
-                                  ┌─────────────────┐
-                                  │  Ingestion Jobs  │  (Celery)
-                                  │  - Scheduled     │
-                                  │  - Webhook-driven│
-                                  └────────┬────────┘
-                                           │
-                                           ▼
-                                  ┌─────────────────┐
-                                  │  PostgreSQL      │
-                                  │  + pgvector      │
-                                  │  (events,        │
-                                  │   embeddings,    │
-                                  │   briefs)        │
-                                  └────────┬────────┘
-                                           │
-                                           ▼
-                                  ┌─────────────────┐
-                                  │  Reasoning Layer │
-                                  │  - HDBSCAN cluster│
-                                  │  - Cross-source  │  ← Claude Sonnet
-                                  │    correlation   │
-                                  │  - Insight gen   │  ← Claude Sonnet
-                                  └────────┬────────┘
-                                           │
-                                           ▼
-                                  ┌─────────────────┐
-                                  │  Brief Generator │
-                                  │  - Assemble      │
-                                  │  - Attach sources│
-                                  │  - Store + send  │
-                                  └────────┬────────┘
-                                           │
-                               ┌───────────┴──────────┐
-                               ▼                      ▼
-                          Email (Resend)        REST API  ──────> Next.js Dashboard
-                          Slack (webhook)                         - Brief viewer
-                                                                  - Insight feed
-                                                                  - Evidence drill-down
-                                                                  - Q&A (V2)
+External Tools               Backend (FastAPI + Celery)          Frontend (Next.js)
+──────────────               ──────────────────────────          ──────────────────
+Zendesk  ──┐  OAuth + sync   ┌──────────────────────┐
+Linear   ──┤ ──────────────> │  Connectors          │
+Slack    ──┤                 │  zendesk.py          │
+           └                 └──────────┬───────────┘
+                                        │ normalize → RawEvent
+                                        ▼
+                             ┌──────────────────────┐
+                             │  embed_events (Celery)│  OpenAI text-embedding-3-small
+                             │  Batches of 500       │  → pgvector
+                             └──────────┬────────────┘
+                                        │
+                              ┌─────────┴─────────┐
+                              ▼                   ▼
+                  ┌───────────────────┐  ┌──────────────────┐
+                  │  detect_pulse     │  │  generate_brief  │
+                  │  (after every     │  │  (weekly Celery  │
+                  │   embed run)      │  │   beat, or POST) │
+                  │  HDBSCAN, 1.5×    │  │                  │
+                  │  threshold, no    │  │  cluster → Claude│
+                  │  LLM              │  │  → Insight rows  │
+                  └────────┬──────────┘  └────────┬─────────┘
+                           │                      │
+                           ▼                      ▼
+                  InsightFeedItems           Brief + Insights
+                                            + EvidenceRefs
+                                                  │
+                                          ┌───────┴───────┐
+                                          ▼               ▼
+                                    REST API          Resend email
+                                          │
+                                          ▼
+                              ┌─────────────────────┐
+                              │  Next.js Dashboard  │
+                              │  /dashboard  Briefs │
+                              │  /pulse      Feed   │
+                              │  /connectors Setup  │
+                              └─────────────────────┘
 ```
 
 ## Backend Components
 
 ### Connectors (`backend/app/connectors/`)
 
-Each connector is responsible for:
-- OAuth flow (authorize, callback, token storage)
-- Initial full sync (paginated historical pull)
-- Incremental sync (delta since last cursor)
-- Normalizing raw API responses into `RawEvent` schema
+Each connector handles OAuth, full sync, incremental sync, and normalises responses into `RawEvent`.
 
 `RawEvent` is the common schema all connectors write to:
 ```python
-class RawEvent(Base):
-    id: UUID
-    org_id: UUID
-    source: str          # "zendesk", "linear", "slack", etc.
-    source_id: str       # original ID in the source system
-    event_type: str      # "ticket", "issue", "message", "transcript_segment"
-    content: str         # normalized text content
-    metadata: dict       # source-specific fields (status, priority, author, url)
-    created_at: datetime
-    ingested_at: datetime
-    embedding: vector    # pgvector — generated after ingestion
+source: str        # "zendesk", "linear", "slack"
+source_id: str     # original ID in source system
+event_type: str    # "ticket", "issue", "message"
+content: str       # normalised text
+metadata_: dict    # source-specific fields (status, priority, url)
+embedding: vector  # pgvector — populated by embed_events
 ```
 
-MVP connectors: `zendesk.py`, `linear.py`
+Built: `zendesk.py` · Planned: `linear.py`
 
-### Ingestion Jobs (`backend/workers/`)
+### Workers (`backend/workers/`)
 
-Celery tasks:
-- `sync_connector(org_id, connector)` — scheduled every 6 hours, pulls deltas
-- `embed_events(org_id, batch)` — vectorizes new RawEvents using OpenAI `text-embedding-3-small`; stores vectors in pgvector
-- `generate_brief(org_id)` — weekly scheduled task that triggers the reasoning pipeline
+| Task | Trigger | Description |
+|---|---|---|
+| `embed_events` | After every sync | Vectorise new RawEvents in batches of 500 |
+| `detect_pulse` | After every embed | Cluster 24h events, surface spikes ≥ 1.5× daily average |
+| `generate_brief` | Weekly (Mon 08:00) or manual POST | Full reasoning pipeline → Brief |
+| `dispatch_all_orgs` | Celery beat | Fan-out: fires `generate_brief` per active org |
 
-### Reasoning Layer (`backend/app/reasoning/`)
+### Reasoning Pipeline (`backend/workers/`)
 
-Three distinct stages — only the last two touch Claude:
+Three stages — only the last touches Claude:
 
-1. **Clustering (no LLM)** — HDBSCAN over pgvector embeddings. Groups semantically similar RawEvents into themes per source. Pure math: fast, cheap, no API calls. Each cluster gets a centroid and a list of member event IDs.
+1. **Clustering** (`cluster.py`) — HDBSCAN over pgvector embeddings. Groups similar RawEvents into themes. No LLM, no API cost. Used by both `detect_pulse` and `generate_brief`.
 
-2. **Cross-source correlation (Claude Sonnet)** — given a set of cluster summaries from Zendesk + Linear, Claude identifies patterns that span sources (e.g., "Zendesk cluster about invite flow" correlates with "Linear backlog of permissions issues"). Called once per brief cycle. Prompt caching: cluster summaries are the cached prefix, reasoning instructions are the variable suffix.
+2. **Pulse detection** (`pulse.py`) — Compares 24h cluster sizes to 7-day daily average. Threshold: ≥ 1.5×. Writes `InsightFeedItem` rows. Runs after every embed, not just weekly.
 
-3. **Insight scoring + generation (Claude Sonnet)** — for each correlated pattern, Claude produces a ranked insight: title, plain-language explanation, suggested action, confidence score (0–1), and EvidenceRef citations. Scores are weighted by: frequency of corroborating events, recency, and source diversity (multi-source > single-source).
+3. **Insight generation** (`reason.py`) — Claude Sonnet with prompt caching. Receives cluster summaries, returns ranked insights with category, title, explanation, suggested action, confidence (0–1), affected ticket count, and evidence citations.
 
-### Brief Assembly (`backend/app/brief/`)
+### API Routes (`backend/app/api/routes/`)
 
-Takes the top 3–7 scored insights and assembles a structured `Brief` object:
-```python
-class Brief(Base):
-    id: UUID
-    org_id: UUID
-    generated_at: datetime
-    period_start: datetime
-    period_end: datetime
-    insights: list[Insight]  # JSON
-    status: str              # "draft", "sent"
+| Route | Description |
+|---|---|
+| `POST /orgs` | Create org + owner membership |
+| `GET /orgs/me` | Get caller's org |
+| `GET /connectors?org_id=` | List connectors |
+| `GET /connectors/zendesk/authorize` | Start Zendesk OAuth |
+| `GET /connectors/zendesk/callback` | Complete OAuth, store tokens |
+| `POST /connectors/sync` | Trigger manual sync |
+| `GET /briefs?org_id=` | List briefs |
+| `GET /briefs/{id}` | Brief detail with insights + evidence |
+| `POST /briefs/generate` | Manually trigger brief generation |
+| `GET /pulse?org_id=` | Live feed items (non-expired, newest first) |
 
-class Insight:
-    rank: int
-    title: str
-    explanation: str
-    suggested_action: str
-    confidence: float        # 0–1
-    evidence: list[EvidenceRef]
+### Auth
 
-class EvidenceRef:
-    raw_event_id: UUID
-    source: str
-    excerpt: str
-    url: str                 # deep link back to source tool
-```
+Clerk-issued JWTs verified via JWKS on every request. `get_current_user_id` dependency extracts the `sub` claim (Clerk user ID).
 
-### API (`backend/app/api/`)
+## Frontend Components (`frontend/app/`)
 
-RESTful endpoints:
-- `POST /orgs/{id}/connectors` — connect a new integration
-- `GET /orgs/{id}/briefs` — list briefs
-- `GET /orgs/{id}/briefs/{brief_id}` — brief detail with full evidence
-- `GET /orgs/{id}/insights/feed` — real-time insight feed
-- `POST /orgs/{id}/briefs/generate` — manual trigger (admin/dev use)
-- `GET /orgs/{id}/events` — raw event search (for Q&A, V2)
+| Route | Type | Description |
+|---|---|---|
+| `/` | Server | Landing page — sign up / sign in CTAs |
+| `/sign-in/[[...rest]]` | Static | Clerk sign-in component |
+| `/sign-up/[[...rest]]` | Static | Clerk sign-up component |
+| `/onboarding` | Client | Create org form |
+| `/(app)/dashboard` | Server | Briefs list |
+| `/(app)/briefs/[id]` | Server | Brief detail: insights + evidence |
+| `/(app)/pulse` | Server | Live Pulse feed |
+| `/(app)/connectors` | Server | Connector status + Zendesk OAuth |
 
-## Frontend Components
-
-Pages (Next.js App Router):
-- `/` — landing / onboarding
-- `/dashboard` — insight feed (between briefs)
-- `/briefs` — list of past briefs
-- `/briefs/[id]` — brief detail: insights + evidence drill-down
-- `/settings/integrations` — connect/manage data sources
-- `/settings/delivery` — configure email/Slack brief delivery
-
-## Database Schema (key tables)
+## Database Schema
 
 ```
-organizations       — org config, plan, settings
-users               — members, roles
-oauth_credentials   — encrypted tokens per connector per org
-raw_events          — all ingested data (+ pgvector embeddings)
-briefs              — generated briefs (JSON insights payload)
-brief_deliveries    — delivery log (email/Slack, sent_at, opened_at)
+organizations       — name, plan, settings (JSON — includes brief_email)
+users               — clerk_id, email, name
+organization_members — org_id, user_id, role
+oauth_credentials   — connector tokens (encrypted)
+connectors          — per-org connector config, status, last_synced_at
+sync_cursors        — incremental sync state per connector
+raw_events          — all ingested data + pgvector embeddings
+insight_feed_items  — pulse signals (severity, ticket_count, expires_at)
+briefs              — generated briefs (status, period, generated_at)
+insights            — per-brief: rank, category, title, confidence, affected_count
+evidence_refs       — insight → raw_event citation (excerpt, url)
+brief_deliveries    — delivery log (channel, recipient, status, sent_at)
 ```
+
+## Pulse vs Brief — Key Difference
+
+| | Pulse | Brief |
+|---|---|---|
+| Frequency | After every sync (≤6h) | Weekly |
+| Latency | Minutes after a spike | Up to 7 days |
+| LLM cost | Zero | Claude Sonnet call |
+| Depth | Headline + count | Full insight + evidence + action |
+| Purpose | Catch fast-moving issues | Structured weekly review |
 
 ## Security Notes
 
-- OAuth tokens encrypted at rest (Fernet/AES-256)
-- All API endpoints require org-scoped JWT
-- Slack ingestion: only configured channels, never DMs
-- No raw event content exposed in API responses — only excerpts via EvidenceRef
-- SOC 2 Type II is a V2 milestone
-
-## Scaling Considerations (post-MVP)
-
-- Ingestion jobs are already async (Celery) — scale workers independently
-- Embeddings can be batched and offloaded
-- Brief generation is compute-heavy but infrequent — can run on a beefy single worker
-- pgvector handles moderate scale; migrate to Pinecone/Weaviate if vector search becomes a bottleneck
+- OAuth tokens stored encrypted via Fernet/AES-256 in `oauth_credentials`
+- All endpoints require Clerk JWT
+- No raw event content in API responses — only excerpts via `EvidenceRef`
+- SOC 2 Type II is a post-MVP milestone

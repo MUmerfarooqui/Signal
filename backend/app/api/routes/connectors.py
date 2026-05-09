@@ -227,7 +227,9 @@ def trigger_sync(
     if cred is None:
         raise HTTPException(status_code=400, detail="Connector has no credentials")
 
-    subdomain = connector.config.get("subdomain", settings.zendesk_subdomain)
+    subdomain = connector.config.get("subdomain")
+    if not subdomain:
+        raise HTTPException(status_code=400, detail="Connector missing subdomain — reconnect via OAuth")
 
     # Fetch existing cursor
     cursor_row = db.execute(

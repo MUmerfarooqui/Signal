@@ -117,6 +117,8 @@ def generate_brief(self, org_id: str) -> dict:
                 explanation=raw["explanation"],
                 suggested_action=raw["suggested_action"],
                 confidence=float(raw["confidence"]),
+                category=raw.get("category"),
+                affected_count=raw.get("affected_count"),
             )
             db.add(insight)
             db.flush()
