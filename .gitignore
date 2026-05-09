@@ -33,3 +33,10 @@ logs/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Graphify
+graphify-out/cache/
